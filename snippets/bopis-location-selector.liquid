@@ -28,20 +28,12 @@
   endcomment
   assign storefront_token = "d7c3a5e35c9f841d02f1e5c3eaa92a4a"
   assign shop_domain = shop.domain
-
-  comment
-    Pass the Liquid cart ID if it exists
-    Note: cart.id is only available when using Storefront API cart
-    If empty, component will create/sync Storefront cart from AJAX cart
-  endcomment
-  assign storefront_cart_id = cart.id
 -%}
 
 <div class="bopis-wrapper">
   <bopis-location-selector
     data-storefront-token="{{ storefront_token }}"
     data-shop-domain="{{ shop_domain }}"
-    {% if storefront_cart_id != blank %}data-cart-id="{{ storefront_cart_id }}"{% endif %}
     {% if section_id %}data-section-id="{{ section_id }}"{% endif %}
   >
     {%- comment -%}

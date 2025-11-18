@@ -49,7 +49,6 @@ if (!customElements.get('bopis-location-selector')) {
     async initialize() {
       const storefrontAccessToken = this.dataset.storefrontToken;
       const shopDomain = this.dataset.shopDomain;
-      const cartId = this.dataset.cartId;
 
       if (!storefrontAccessToken || !shopDomain) {
         this.state.error = 'Configuration error: Missing Storefront API credentials';
@@ -65,15 +64,8 @@ if (!customElements.get('bopis-location-selector')) {
       this.render();
 
       try {
-        // If cart ID is provided from Liquid, use it
-        if (cartId) {
-          this.state.cartId = cartId;
-          console.log('BOPIS: Using Liquid cart ID:', this.state.cartId);
-        } else {
-          // Otherwise, create/sync Storefront cart from AJAX cart
-          console.log('BOPIS: No Liquid cart ID, creating Storefront cart from AJAX cart');
-          await this.createStorefrontCartFromAjax();
-        }
+        // Get AJAX cart token and convert to Storefront API format
+        await this.fetchCartIdFromAjax();
 
         // Fetch pickup locations
         await this.fetchPickupLocations();
@@ -86,177 +78,28 @@ if (!customElements.get('bopis-location-selector')) {
       }
     }
 
-    async createStorefrontCartFromAjax() {
+    async fetchCartIdFromAjax() {
       try {
         // Get the AJAX cart
         const ajaxCartResponse = await fetch('/cart.js');
         const ajaxCart = await ajaxCartResponse.json();
 
-        console.log('BOPIS: AJAX cart:', ajaxCart);
+        // Get cart token from AJAX API
+        const cartToken = ajaxCart.token;
 
-        // If cart is empty, show error
-        if (ajaxCart.items.length === 0) {
-          throw new Error('Please add items to cart before selecting a pickup location');
+        if (!cartToken) {
+          throw new Error('No cart token found');
         }
 
-        // Create Storefront cart with AJAX cart items
-        const lines = ajaxCart.items.map(item => ({
-          merchandiseId: `gid://shopify/ProductVariant/${item.variant_id}`,
-          quantity: item.quantity
-        }));
+        // Convert AJAX cart token to Storefront API cart ID format
+        // gid://shopify/Cart/{token}
+        this.state.cartId = `gid://shopify/Cart/${cartToken}`;
 
-        const mutation = `
-          mutation cartCreate($input: CartInput!) {
-            cartCreate(input: $input) {
-              cart {
-                id
-              }
-              userErrors {
-                field
-                message
-              }
-            }
-          }
-        `;
-
-        const variables = {
-          input: {
-            lines: lines
-          }
-        };
-
-        const data = await this.storefrontClient.mutate(mutation, variables);
-
-        if (data.cartCreate.userErrors.length > 0) {
-          throw new Error(data.cartCreate.userErrors[0].message);
-        }
-
-        this.state.cartId = data.cartCreate.cart.id;
-        console.log('BOPIS: Created Storefront cart with', ajaxCart.items.length, 'items:', this.state.cartId);
+        console.log('BOPIS: Using shared cart with token:', cartToken);
+        console.log('BOPIS: Storefront API cart ID:', this.state.cartId);
       } catch (error) {
-        console.error('BOPIS: Failed to create Storefront cart:', error);
-        throw error;
-      }
-    }
-
-    async syncAjaxCartToStorefront() {
-      try {
-        // Get current AJAX cart
-        const ajaxCartResponse = await fetch('/cart.js');
-        const ajaxCart = await ajaxCartResponse.json();
-
-        console.log('BOPIS: Syncing AJAX cart with', ajaxCart.items.length, 'items to Storefront cart');
-
-        // Get current Storefront cart
-        const getCartQuery = `
-          query getCart($cartId: ID!) {
-            cart(id: $cartId) {
-              id
-              lines(first: 50) {
-                edges {
-                  node {
-                    id
-                    quantity
-                    merchandise {
-                      ... on ProductVariant {
-                        id
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          }
-        `;
-
-        const cartData = await this.storefrontClient.query(getCartQuery, { cartId: this.state.cartId });
-        const existingLines = cartData.cart?.lines?.edges || [];
-
-        // Build list of lines to add/update
-        const linesToAdd = [];
-        const linesToUpdate = [];
-
-        for (const ajaxItem of ajaxCart.items) {
-          const variantGid = `gid://shopify/ProductVariant/${ajaxItem.variant_id}`;
-          const existingLine = existingLines.find(edge => edge.node.merchandise.id === variantGid);
-
-          if (existingLine) {
-            // Update if quantity differs
-            if (existingLine.node.quantity !== ajaxItem.quantity) {
-              linesToUpdate.push({
-                id: existingLine.node.id,
-                quantity: ajaxItem.quantity
-              });
-            }
-          } else {
-            // Add new line
-            linesToAdd.push({
-              merchandiseId: variantGid,
-              quantity: ajaxItem.quantity
-            });
-          }
-        }
-
-        // Add new lines if any
-        if (linesToAdd.length > 0) {
-          const addMutation = `
-            mutation cartLinesAdd($cartId: ID!, $lines: [CartLineInput!]!) {
-              cartLinesAdd(cartId: $cartId, lines: $lines) {
-                cart {
-                  id
-                }
-                userErrors {
-                  field
-                  message
-                }
-              }
-            }
-          `;
-
-          const addData = await this.storefrontClient.mutate(addMutation, {
-            cartId: this.state.cartId,
-            lines: linesToAdd
-          });
-
-          if (addData.cartLinesAdd.userErrors.length > 0) {
-            throw new Error(addData.cartLinesAdd.userErrors[0].message);
-          }
-
-          console.log('BOPIS: Added', linesToAdd.length, 'new lines to Storefront cart');
-        }
-
-        // Update existing lines if any
-        if (linesToUpdate.length > 0) {
-          const updateMutation = `
-            mutation cartLinesUpdate($cartId: ID!, $lines: [CartLineUpdateInput!]!) {
-              cartLinesUpdate(cartId: $cartId, lines: $lines) {
-                cart {
-                  id
-                }
-                userErrors {
-                  field
-                  message
-                }
-              }
-            }
-          `;
-
-          const updateData = await this.storefrontClient.mutate(updateMutation, {
-            cartId: this.state.cartId,
-            lines: linesToUpdate
-          });
-
-          if (updateData.cartLinesUpdate.userErrors.length > 0) {
-            throw new Error(updateData.cartLinesUpdate.userErrors[0].message);
-          }
-
-          console.log('BOPIS: Updated', linesToUpdate.length, 'lines in Storefront cart');
-        }
-
-        console.log('BOPIS: Cart sync complete');
-      } catch (error) {
-        console.error('BOPIS: Failed to sync carts:', error);
-        throw error;
+        console.error('BOPIS: Failed to get cart token:', error);
+        throw new Error('Unable to access cart. Please try refreshing the page.');
       }
     }
 
@@ -301,21 +144,19 @@ if (!customElements.get('bopis-location-selector')) {
     }
 
     async selectLocation(location) {
+      if (!this.state.cartId) {
+        this.state.error = 'Cart not initialized. Please refresh the page.';
+        this.render();
+        return;
+      }
+
       this.state.loading = true;
       this.state.error = null;
       this.render();
 
       try {
-        // Ensure we have a Storefront cart with current AJAX cart items
-        if (!this.state.cartId) {
-          console.log('BOPIS: Creating Storefront cart before setting pickup location');
-          await this.createStorefrontCartFromAjax();
-        } else {
-          // Sync AJAX cart items to Storefront cart to ensure they match
-          await this.syncAjaxCartToStorefront();
-        }
-
-        // Set pickup location on the cart
+        // Set pickup location on the shared cart
+        // AJAX cart and Storefront cart are the same cart with same token
         const pickupHandle = location.id.split('/').pop();
 
         const mutation = `
@@ -572,8 +413,8 @@ if (!customElements.get('bopis-location-selector')) {
         const { locations, selectedLocation, loading, error } = this.state;
 
         return h('div', { className: 'bopis-container' },
-          h('h3', { className: 'bopis-title' }, 'Choose In-Store Pickup Location'),
-          h('p', { className: 'bopis-subtitle' }, 'Add items to cart, then select your pickup location'),
+          h('h3', { className: 'bopis-title' }, 'In-Store Pickup Available'),
+          h('p', { className: 'bopis-subtitle' }, 'Add items to your cart first, then select a pickup location below'),
 
           error && h('div', { className: 'bopis-error' },
             h('svg', {
