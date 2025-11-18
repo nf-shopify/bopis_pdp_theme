@@ -144,19 +144,51 @@ if (!customElements.get('bopis-location-selector')) {
     }
 
     async selectLocation(location) {
-      if (!this.state.cartId) {
-        this.state.error = 'Cart not initialized. Please refresh the page.';
-        this.render();
-        return;
-      }
-
       this.state.loading = true;
       this.state.error = null;
       this.render();
 
       try {
-        // Set pickup location on the shared cart
-        // AJAX cart and Storefront cart are the same cart with same token
+        // Step 1: Get product variant and quantity from the product form
+        const productForm = document.querySelector('product-form form');
+        if (!productForm) {
+          throw new Error('Product form not found');
+        }
+
+        const variantId = productForm.querySelector('[name="id"]')?.value;
+        const quantity = parseInt(productForm.querySelector('[name="quantity"]')?.value || '1');
+
+        if (!variantId) {
+          throw new Error('Please select a product variant');
+        }
+
+        console.log('BOPIS: Adding product to cart - Variant:', variantId, 'Quantity:', quantity);
+
+        // Step 2: Add product to cart via AJAX API
+        const addToCartResponse = await fetch('/cart/add.js', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            items: [{
+              id: variantId,
+              quantity: quantity
+            }]
+          })
+        });
+
+        if (!addToCartResponse.ok) {
+          throw new Error('Failed to add product to cart');
+        }
+
+        const addToCartResult = await addToCartResponse.json();
+        console.log('BOPIS: Product added to cart:', addToCartResult);
+
+        // Step 3: Refresh cart token after adding product
+        await this.fetchCartIdFromAjax();
+
+        // Step 4: Set pickup location on the cart
         const pickupHandle = location.id.split('/').pop();
 
         const mutation = `
@@ -206,19 +238,23 @@ if (!customElements.get('bopis-location-selector')) {
         this.state.selectedLocation = location;
         const checkoutUrl = data.cartBuyerIdentityUpdate.cart.checkoutUrl;
 
-        console.log('BOPIS: Pickup location set successfully for cart:', this.state.cartId);
+        console.log('BOPIS: Product added and pickup location set for cart:', this.state.cartId);
 
-        // Show success message
-        this.showSuccessMessage(location, checkoutUrl);
+        // Show success message with product info
+        this.showSuccessMessage(location, checkoutUrl, addToCartResult);
 
         // Publish event for other components to react to
         if (typeof publish !== 'undefined') {
           publish(PUB_SUB_EVENTS.cartUpdate, {
             source: 'bopis-location-selector',
             cartId: this.state.cartId,
-            pickupLocation: location
+            pickupLocation: location,
+            productAdded: true
           });
         }
+
+        // Update cart UI elements (cart count, etc.)
+        document.documentElement.dispatchEvent(new CustomEvent('cart:refresh'));
       } catch (error) {
         console.error('Failed to update pickup location:', error);
         this.state.error = error.message || 'Failed to set pickup location';
@@ -228,8 +264,11 @@ if (!customElements.get('bopis-location-selector')) {
       }
     }
 
-    showSuccessMessage(location, checkoutUrl) {
+    showSuccessMessage(location, checkoutUrl, cartItems) {
       // Show a custom success message with checkout button
+      const itemCount = Array.isArray(cartItems.items) ? cartItems.items.length : (cartItems.items ? 1 : 0);
+      const itemText = itemCount === 1 ? 'item' : 'items';
+
       const successDiv = document.createElement('div');
       successDiv.className = 'bopis-success-overlay';
       successDiv.innerHTML = `
@@ -239,13 +278,13 @@ if (!customElements.get('bopis-location-selector')) {
               <circle cx="12" cy="12" r="12" fill="#4CAF50"/>
               <path d="M9 12l2 2 4-4" stroke="white" stroke-width="2" fill="none" stroke-linecap="round"/>
             </svg>
-            <h3>Pickup Location Set!</h3>
-            <p>Your items will be ready for pickup at:</p>
+            <h3>Added to Cart for Pickup!</h3>
+            <p class="bopis-success-summary">${itemCount} ${itemText} added to your cart</p>
+            <p>Ready for pickup at:</p>
             <p class="bopis-location-name"><strong>${location.name}</strong></p>
             <p class="bopis-location-address">${location.address.address1}<br>${location.address.city}, ${location.address.province} ${location.address.zip}</p>
-            <p class="bopis-checkout-note">Click below to proceed to checkout with your pickup order</p>
             <div class="bopis-success-actions">
-              <a href="${checkoutUrl}" class="bopis-checkout-button">Checkout with Pickup</a>
+              <a href="${checkoutUrl}" class="bopis-checkout-button">Proceed to Checkout</a>
               <button class="bopis-continue-button" onclick="this.closest('.bopis-success-overlay').remove()">Continue Shopping</button>
             </div>
           </div>
@@ -313,6 +352,13 @@ if (!customElements.get('bopis-location-selector')) {
           margin: 8px 0;
           color: #666;
           line-height: 1.5;
+        }
+
+        .bopis-success-summary {
+          font-size: 16px;
+          color: #4CAF50;
+          font-weight: 600;
+          margin: 12px 0 16px;
         }
 
         .bopis-location-name {
@@ -413,8 +459,8 @@ if (!customElements.get('bopis-location-selector')) {
         const { locations, selectedLocation, loading, error } = this.state;
 
         return h('div', { className: 'bopis-container' },
-          h('h3', { className: 'bopis-title' }, 'In-Store Pickup Available'),
-          h('p', { className: 'bopis-subtitle' }, 'Add items to your cart first, then select a pickup location below'),
+          h('h3', { className: 'bopis-title' }, 'Buy Online, Pick Up In-Store'),
+          h('p', { className: 'bopis-subtitle' }, 'Select a location below to add this item to your cart for pickup'),
 
           error && h('div', { className: 'bopis-error' },
             h('svg', {
@@ -540,16 +586,35 @@ if (!customElements.get('bopis-location-selector')) {
         }
 
         .bopis-location {
-          padding: 16px;
+          padding: 16px 16px 32px 16px;
           border: 2px solid #e5e5e5;
           border-radius: 6px;
           cursor: pointer;
           transition: all 0.2s;
+          position: relative;
+        }
+
+        .bopis-location::after {
+          content: '👆 Click to add to cart';
+          position: absolute;
+          bottom: 10px;
+          right: 12px;
+          font-size: 11px;
+          color: #2c6ecb;
+          opacity: 0;
+          transition: opacity 0.2s;
+          font-weight: 500;
         }
 
         .bopis-location:hover {
-          border-color: #333;
+          border-color: #2c6ecb;
           background: #fafafa;
+          transform: translateY(-2px);
+          box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+        }
+
+        .bopis-location:hover::after {
+          opacity: 1;
         }
 
         .bopis-location.selected {
