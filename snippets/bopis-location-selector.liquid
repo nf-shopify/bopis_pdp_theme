@@ -1,0 +1,76 @@
+{% comment %}
+  Renders BOPIS (Buy Online, Pick Up In Store) location selector.
+
+  Accepts:
+  - product: {Object} product object (optional, for context)
+  - section_id: {String} id of section to which this snippet belongs (optional)
+
+  Usage:
+  {% render 'bopis-location-selector', product: product, section_id: section.id %}
+
+  Requirements:
+  1. Storefront API access token must be configured in theme settings
+  2. Shop must have pickup locations configured
+  3. Cart must be created via Storefront API for full integration
+
+  Note: This component uses React loaded from CDN
+{% endcomment %}
+
+{%- comment -%}
+  TODO: Configure these settings in your theme settings
+  For now, these are placeholder values that need to be replaced
+{%- endcomment -%}
+
+{%- liquid
+  comment
+    Storefront API token hardcoded for development
+    TODO: Move to theme settings for production
+  endcomment
+  assign storefront_token = "d7c3a5e35c9f841d02f1e5c3eaa92a4a"
+  assign shop_domain = shop.domain
+-%}
+
+<div class="bopis-wrapper">
+  <bopis-location-selector
+    data-storefront-token="{{ storefront_token }}"
+    data-shop-domain="{{ shop_domain }}"
+    {% if section_id %}data-section-id="{{ section_id }}"{% endif %}
+  >
+    {%- comment -%}
+      Fallback content shown if JavaScript is disabled
+      or component fails to load
+    {%- endcomment -%}
+    <div class="bopis-fallback">
+      <p>
+        <strong>In-Store Pickup Available</strong>
+      </p>
+      <p>
+        Select a pickup location at checkout.
+      </p>
+    </div>
+  </bopis-location-selector>
+</div>
+
+<script src="{{ 'bopis-location-selector.js' | asset_url }}" defer="defer"></script>
+
+<style>
+  .bopis-wrapper {
+    margin: 20px 0;
+  }
+
+  .bopis-fallback {
+    padding: 20px;
+    border: 1px solid #e5e5e5;
+    border-radius: 8px;
+    background: #f9f9f9;
+    text-align: center;
+  }
+
+  .bopis-fallback p {
+    margin: 8px 0;
+  }
+
+  .bopis-fallback strong {
+    font-size: 16px;
+  }
+</style>
