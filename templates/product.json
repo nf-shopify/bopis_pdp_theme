@@ -48,7 +48,7 @@
           "type": "description",
           "settings": {}
         },
-        "bopis_location_selector_9HhqYM": {
+        "bopis_location_selector_ymyR7K": {
           "type": "bopis_location_selector",
           "settings": {}
         },
@@ -68,7 +68,7 @@
         "price",
         "buy_buttons",
         "description",
-        "bopis_location_selector_9HhqYM",
+        "bopis_location_selector_ymyR7K",
         "share"
       ],
       "settings": {
