@@ -49,6 +49,7 @@ if (!customElements.get('bopis-location-selector')) {
     async initialize() {
       const storefrontAccessToken = this.dataset.storefrontToken;
       const shopDomain = this.dataset.shopDomain;
+      const cartId = this.dataset.cartId;
 
       if (!storefrontAccessToken || !shopDomain) {
         this.state.error = 'Configuration error: Missing Storefront API credentials';
@@ -57,15 +58,24 @@ if (!customElements.get('bopis-location-selector')) {
         return;
       }
 
+      if (!cartId) {
+        this.state.error = 'Configuration error: Missing cart ID';
+        console.error('BOPIS: Missing cart ID (data-cart-id)');
+        this.render();
+        return;
+      }
+
       this.storefrontClient = new StorefrontClient(storefrontAccessToken, shopDomain);
+      this.state.cartId = cartId;
+
+      console.log('BOPIS: Using Liquid cart ID:', this.state.cartId);
 
       // Show initial loading state
       this.state.loading = true;
       this.render();
 
       try {
-        // Fetch cart ID first, then locations
-        await this.fetchCartId();
+        // Fetch pickup locations
         await this.fetchPickupLocations();
       } catch (error) {
         console.error('BOPIS initialization failed:', error);
@@ -73,95 +83,6 @@ if (!customElements.get('bopis-location-selector')) {
       } finally {
         this.state.loading = false;
         this.render();
-      }
-    }
-
-    async fetchCartId() {
-      // Check if we have a stored Storefront cart ID
-      const storedCartId = localStorage.getItem('shopify_storefront_cart_id');
-
-      if (storedCartId) {
-        // Verify the cart still exists
-        const isValid = await this.verifyCart(storedCartId);
-        if (isValid) {
-          this.state.cartId = storedCartId;
-          console.log('Using existing Storefront cart:', storedCartId);
-          return;
-        } else {
-          console.log('Stored cart ID is invalid, creating new cart');
-          localStorage.removeItem('shopify_storefront_cart_id');
-        }
-      }
-
-      // Create a new cart via Storefront API
-      await this.createStorefrontCart();
-    }
-
-    async verifyCart(cartId) {
-      try {
-        const query = `
-          query getCart($cartId: ID!) {
-            cart(id: $cartId) {
-              id
-            }
-          }
-        `;
-
-        const data = await this.storefrontClient.query(query, { cartId });
-        return data.cart && data.cart.id;
-      } catch (error) {
-        return false;
-      }
-    }
-
-    async createStorefrontCart() {
-      try {
-        // Get current Ajax cart items to transfer them
-        const ajaxCartResponse = await fetch('/cart.js');
-        const ajaxCart = await ajaxCartResponse.json();
-
-        const mutation = `
-          mutation cartCreate($input: CartInput!) {
-            cartCreate(input: $input) {
-              cart {
-                id
-                checkoutUrl
-              }
-              userErrors {
-                field
-                message
-              }
-            }
-          }
-        `;
-
-        // Convert Ajax cart items to Storefront API format
-        const lines = ajaxCart.items.map(item => ({
-          merchandiseId: `gid://shopify/ProductVariant/${item.variant_id}`,
-          quantity: item.quantity
-        }));
-
-        const variables = {
-          input: {
-            lines: lines.length > 0 ? lines : []
-          }
-        };
-
-        const data = await this.storefrontClient.mutate(mutation, variables);
-
-        if (data.cartCreate.userErrors.length > 0) {
-          throw new Error(data.cartCreate.userErrors[0].message);
-        }
-
-        this.state.cartId = data.cartCreate.cart.id;
-
-        // Store cart ID in localStorage for future use
-        localStorage.setItem('shopify_storefront_cart_id', this.state.cartId);
-
-        console.log('Created Storefront API cart:', this.state.cartId);
-      } catch (error) {
-        console.error('Failed to create Storefront cart:', error);
-        throw error;
       }
     }
 
@@ -217,19 +138,8 @@ if (!customElements.get('bopis-location-selector')) {
       this.render();
 
       try {
-        // Step 1: Get current product variant and quantity from the product form
-        const productForm = document.querySelector('product-form form');
-        const variantId = productForm?.querySelector('[name="id"]')?.value;
-        const quantity = parseInt(productForm?.querySelector('[name="quantity"]')?.value || '1');
-
-        if (!variantId) {
-          throw new Error('No product selected');
-        }
-
-        // Step 2: Add product to Storefront cart (or update if cart already has items)
-        await this.addProductToStorefrontCart(variantId, quantity);
-
-        // Step 3: Set pickup location on the cart
+        // Set pickup location on the cart
+        // Products should already be in cart from AJAX add-to-cart
         const pickupHandle = location.id.split('/').pop();
 
         const mutation = `
@@ -279,7 +189,9 @@ if (!customElements.get('bopis-location-selector')) {
         this.state.selectedLocation = location;
         const checkoutUrl = data.cartBuyerIdentityUpdate.cart.checkoutUrl;
 
-        // Step 4: Show success and redirect to checkout with BOPIS settings
+        console.log('BOPIS: Pickup location set successfully for cart:', this.state.cartId);
+
+        // Show success message
         this.showSuccessMessage(location, checkoutUrl);
 
         // Publish event for other components to react to
@@ -299,107 +211,6 @@ if (!customElements.get('bopis-location-selector')) {
       }
     }
 
-    async addProductToStorefrontCart(variantId, quantity) {
-      try {
-        // First, check if product is already in cart
-        const getCartQuery = `
-          query getCart($cartId: ID!) {
-            cart(id: $cartId) {
-              id
-              lines(first: 50) {
-                edges {
-                  node {
-                    id
-                    quantity
-                    merchandise {
-                      ... on ProductVariant {
-                        id
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          }
-        `;
-
-        const cartData = await this.storefrontClient.query(getCartQuery, { cartId: this.state.cartId });
-        const existingLines = cartData.cart?.lines?.edges || [];
-
-        // Check if this variant is already in the cart
-        const existingLine = existingLines.find(edge =>
-          edge.node.merchandise.id === `gid://shopify/ProductVariant/${variantId}`
-        );
-
-        if (existingLine) {
-          // Update quantity of existing line
-          const updateMutation = `
-            mutation cartLinesUpdate($cartId: ID!, $lines: [CartLineUpdateInput!]!) {
-              cartLinesUpdate(cartId: $cartId, lines: $lines) {
-                cart {
-                  id
-                }
-                userErrors {
-                  field
-                  message
-                }
-              }
-            }
-          `;
-
-          const updateVariables = {
-            cartId: this.state.cartId,
-            lines: [{
-              id: existingLine.node.id,
-              quantity: existingLine.node.quantity + quantity
-            }]
-          };
-
-          const updateData = await this.storefrontClient.mutate(updateMutation, updateVariables);
-
-          if (updateData.cartLinesUpdate.userErrors.length > 0) {
-            throw new Error(updateData.cartLinesUpdate.userErrors[0].message);
-          }
-
-          console.log('Updated product quantity in Storefront cart');
-        } else {
-          // Add new line to cart
-          const addMutation = `
-            mutation cartLinesAdd($cartId: ID!, $lines: [CartLineInput!]!) {
-              cartLinesAdd(cartId: $cartId, lines: $lines) {
-                cart {
-                  id
-                }
-                userErrors {
-                  field
-                  message
-                }
-              }
-            }
-          `;
-
-          const addVariables = {
-            cartId: this.state.cartId,
-            lines: [{
-              merchandiseId: `gid://shopify/ProductVariant/${variantId}`,
-              quantity: quantity
-            }]
-          };
-
-          const addData = await this.storefrontClient.mutate(addMutation, addVariables);
-
-          if (addData.cartLinesAdd.userErrors.length > 0) {
-            throw new Error(addData.cartLinesAdd.userErrors[0].message);
-          }
-
-          console.log('Added product to Storefront cart');
-        }
-      } catch (error) {
-        console.error('Failed to add product to cart:', error);
-        throw error;
-      }
-    }
-
     showSuccessMessage(location, checkoutUrl) {
       // Show a custom success message with checkout button
       const successDiv = document.createElement('div');
@@ -411,8 +222,8 @@ if (!customElements.get('bopis-location-selector')) {
               <circle cx="12" cy="12" r="12" fill="#4CAF50"/>
               <path d="M9 12l2 2 4-4" stroke="white" stroke-width="2" fill="none" stroke-linecap="round"/>
             </svg>
-            <h3>Ready for Pickup!</h3>
-            <p>Product added to cart with pickup at:</p>
+            <h3>Pickup Location Set!</h3>
+            <p>Your cart is now set for pickup at:</p>
             <p class="bopis-location-name"><strong>${location.name}</strong></p>
             <p class="bopis-location-address">${location.address.address1}<br>${location.address.city}, ${location.address.province} ${location.address.zip}</p>
             <div class="bopis-success-actions">
@@ -577,7 +388,8 @@ if (!customElements.get('bopis-location-selector')) {
         const { locations, selectedLocation, loading, error } = this.state;
 
         return h('div', { className: 'bopis-container' },
-          h('h3', { className: 'bopis-title' }, 'Select Pickup Location'),
+          h('h3', { className: 'bopis-title' }, 'Choose In-Store Pickup Location'),
+          h('p', { className: 'bopis-subtitle' }, 'Add items to cart, then select your pickup location'),
 
           error && h('div', { className: 'bopis-error' },
             h('svg', {
@@ -644,10 +456,16 @@ if (!customElements.get('bopis-location-selector')) {
         }
 
         .bopis-title {
-          margin: 0 0 16px;
+          margin: 0 0 8px;
           font-size: 18px;
           font-weight: 600;
           color: #333;
+        }
+
+        .bopis-subtitle {
+          margin: 0 0 16px;
+          font-size: 14px;
+          color: #666;
         }
 
         .bopis-error {
